@@ -3,18 +3,29 @@ import requests
 import json
 import time
 import threading
+import os
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
 app = Flask(__name__)
 
-# ---- ये रूट Render को बताता है कि ऐप चालू है ----
+# Google Sheet सेटअप
+def get_sheet():
+    # Render के Environment Variable से क्रेडेंशियल्स उठाना
+    creds_json = os.environ.get('GOOGLE_CRED') 
+    creds_dict = json.loads(creds_json)
+    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    client = gspread.authorize(creds)
+    return client.open('WingoData').sheet1 # अपनी Google Sheet का नाम लिखें
+
 @app.route('/')
 def home():
-    return "✅ WinGo Data Collector is Running 24/7!"
+    return "✅ WinGo Data Collector is Running with Google Sheets!"
 
-# ---- डेटा कलेक्ट करने वाला इंजन ----
 def collect_data():
     API_URL = "https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json"
-    FILE_NAME = "wingo_data.json"
+    sheet = get_sheet()
     
     while True:
         try:
@@ -23,37 +34,27 @@ def collect_data():
             data = response.json()
             records = data.get("data", {}).get("list", [])
             
-            if records:
-                # पुराना डेटा लोड करो
-                try:
-                    with open(FILE_NAME, "r") as f:
-                        existing = json.load(f)
-                except:
-                    existing = []
-                
-                # डुप्लिकेट हटाओ (issueNumber के हिसाब से)
-                existing_issues = {r["issueNumber"] for r in existing}
-                new_records = [r for r in records if r["issueNumber"] not in existing_issues]
-                
-                if new_records:
-                    existing.extend(new_records)
-                    with open(FILE_NAME, "w") as f:
-                        json.dump(existing, f, indent=2)
-                    print(f"✅ Saved {len(new_records)} new. Total: {len(existing)}")
-                else:
-                    print("⏳ No new data.")
+            # शीट से पुराना डेटा लाओ (ताकि डुप्लीकेट न हो)
+            existing_data = sheet.get_all_records()
+            existing_issues = {str(r["issueNumber"]) for r in existing_data}
+            
+            new_records = [r for r in records if str(r["issueNumber"]) not in existing_issues]
+            
+            if new_records:
+                for r in reversed(new_records):
+                    # शीट में कॉलम के हिसाब से डेटा डालो
+                    sheet.append_row([r["issueNumber"], r["number"], r["color"]])
+                print(f"✅ Saved {len(new_records)} new rows.")
             else:
-                print("⚠️ No records found.")
+                print("⏳ No new data.")
                 
         except Exception as e:
             print(f"❌ Error: {e}")
         
-        time.sleep(60)  # हर 60 सेकंड में चलेगा
+        time.sleep(60)
 
-# ---- सबसे पहले यह फंक्शन चलेगा ----
 if __name__ == '__main__':
-    # कलेक्टर को बैकग्राउंड में चलाओ (ताकि वेबसाइट भी चले)
     thread = threading.Thread(target=collect_data, daemon=True)
     thread.start()
-    # सर्वर शुरू करो (Render को यही चाहिए)
     app.run(host='0.0.0.0', port=8080)
+    
