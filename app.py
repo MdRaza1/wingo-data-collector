@@ -1,67 +1,45 @@
+import os, json, time, threading, requests, gspread
 from flask import Flask
-import requests
-import json
-import time
-import threading
-import os
-import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 app = Flask(__name__)
 
-# Google Sheet सेटअप
 def get_sheet():
-    # Render के Environment से क्रेडेंशियल उठाना
-    creds_json = os.environ.get('GOOGLE_CRED') 
+    # यहाँ हम .strip() जोड़ रहे हैं ताकि कोई भी फालतू स्पेस या न्यू लाइन एरर न दे
+    creds_json = os.environ.get('GOOGLE_CRED').strip()
     creds_dict = json.loads(creds_json)
     
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
-    
-    # अपनी शीट का नाम 'WingoData' रखें
     return client.open('WingoData').sheet1
 
-# डेटा कलेक्ट करने वाला इंजन
 def collect_data():
     print("🚀 Background Collector Thread Started!")
-    API_URL = "https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json"
-    
     while True:
         try:
             sheet = get_sheet()
-            response = requests.get(API_URL, timeout=10)
+            response = requests.get("https://draw.ar-lottery01.com/WinGo/WinGo_1M/GetHistoryIssuePage.json", timeout=10)
             data = response.json()
             records = data.get("data", {}).get("list", [])
             
-            # शीट से पुराना डेटा लाएं
-            existing_data = sheet.get_all_records()
-            existing_issues = {str(r["issueNumber"]) for r in existing_data}
+            existing_issues = {str(r["issueNumber"]) for r in sheet.get_all_records()}
+            new_records = [r for r in reversed(records) if str(r["issueNumber"]) not in existing_issues]
             
-            # सिर्फ नया डेटा फिल्टर करें
-            new_records = [r for r in records if str(r["issueNumber"]) not in existing_issues]
+            for r in new_records:
+                sheet.append_row([r["issueNumber"], r["number"], r["color"]])
             
-            if new_records:
-                for r in reversed(new_records):
-                    sheet.append_row([r["issueNumber"], r["number"], r["color"]])
-                print(f"✅ Saved {len(new_records)} new rows.")
-            else:
-                print("⏳ No new data.")
-                
+            if new_records: print(f"✅ Saved {len(new_records)} new rows.")
+            else: print("⏳ No new data.")
         except Exception as e:
             print(f"❌ Error: {e}")
-        
-        time.sleep(60) # हर 60 सेकंड में चेक करेगा
+        time.sleep(60)
 
 @app.route('/')
 def home():
-    return "✅ WinGo Data Collector is running 24/7!"
+    return "✅ WinGo Data Collector is running!"
 
 if __name__ == '__main__':
-    # बैकग्राउंड थ्रेड शुरू करें
-    thread = threading.Thread(target=collect_data, daemon=True)
-    thread.start()
-    
-    # Flask ऐप चलाएं
+    threading.Thread(target=collect_data, daemon=True).start()
     app.run(host='0.0.0.0', port=8080)
     
